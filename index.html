@@ -111,7 +111,7 @@ openBtn.textContent="Loading list…";openBtn.setAttribute("aria-disabled","true
 const data=location.hash.startsWith("#k=")?await unlock(location.hash):decode(location.hash);
 
 if(!data||!Array.isArray(data.f)){
-  listEl.innerHTML='<div class="empty">Couldn't load the contact list from this link. Check that you have the full link (including the part after #), or ask the person who shared it.</div>';
+  listEl.innerHTML='<div class="empty">Could not load the contact list from this link. Check that you have the full link (including the part after #), or ask the person who shared it.</div>';
 }else{
   if(data.t){document.getElementById("title").textContent=data.t;document.title=data.t;}
   const wrap=document.createElement("div");wrap.className="list";
