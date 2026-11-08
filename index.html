@@ -84,17 +84,34 @@ function decode(h){
     return JSON.parse(new TextDecoder().decode(bytes));
   }catch(e){return null;}
 }
-const data=decode(location.hash);
+// Short links (#k=KEY): the list is stored encrypted in data.bin next to this page,
+// and only the key in the link can unlock it. The key never leaves the browser.
+async function unlock(h){
+  try{
+    let s=h.replace(/^#k=/,"").replace(/-/g,"+").replace(/_/g,"/");
+    while(s.length%4)s+="=";
+    const keyBytes=Uint8Array.from(atob(s),c=>c.charCodeAt(0));
+    const res=await fetch("data.bin",{cache:"no-store"});
+    if(!res.ok)return null;
+    const buf=new Uint8Array(await res.arrayBuffer());
+    const key=await crypto.subtle.importKey("raw",keyBytes,"AES-GCM",false,["decrypt"]);
+    const plain=await crypto.subtle.decrypt({name:"AES-GCM",iv:buf.slice(0,12)},key,buf.slice(12));
+    return JSON.parse(new TextDecoder().decode(plain));
+  }catch(e){return null;}
+}
 const listEl=document.getElementById("list");
 const openBtn=document.getElementById("openBtn"),altBtn=document.getElementById("altBtn"),toast=document.getElementById("toast");
 const isIOS=/iPhone|iPad|iPod/.test(navigator.userAgent)||(navigator.platform==="MacIntel"&&navigator.maxTouchPoints>1);
 const fmt=n=>n.length===10?`${n.slice(0,3)}-${n.slice(3,6)}-${n.slice(6)}`:n;
 const esc=s=>String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/"/g,"&quot;");
 let boxes=[];
-const KEY="tgt-sel-"+(location.hash.length%9973);
+const KEY="tgt-sel-"+(location.hash.startsWith("#k=")?"k":(location.hash.length%9973));
+openBtn.textContent="Loading list…";openBtn.setAttribute("aria-disabled","true");
+(async()=>{
+const data=location.hash.startsWith("#k=")?await unlock(location.hash):decode(location.hash);
 
 if(!data||!Array.isArray(data.f)){
-  listEl.innerHTML='<div class="empty">This link has no contact list in it. Ask the person who shared it for the full link.</div>';
+  listEl.innerHTML='<div class="empty">Couldn't load the contact list from this link. Check that you have the full link (including the part after #), or ask the person who shared it.</div>';
 }else{
   if(data.t){document.getElementById("title").textContent=data.t;document.title=data.t;}
   const wrap=document.createElement("div");wrap.className="list";
@@ -114,6 +131,10 @@ if(!data||!Array.isArray(data.f)){
   boxes=[...wrap.querySelectorAll("input[type=checkbox]")];
   wrap.addEventListener("change",update);
 }
+let saved=null;
+try{saved=JSON.parse(localStorage.getItem(KEY));}catch(e){}
+setSel(Array.isArray(saved)?saved:[]);
+})();
 function selected(){return boxes.filter(b=>b.checked).map(b=>b.value);}
 function update(){
   const s=selected();
@@ -131,9 +152,6 @@ function update(){
   try{localStorage.setItem(KEY,JSON.stringify(s));}catch(e){}
 }
 function setSel(arr){boxes.forEach(b=>b.checked=arr.includes(b.value));update();}
-let saved=null;
-try{saved=JSON.parse(localStorage.getItem(KEY));}catch(e){}
-setSel(Array.isArray(saved)?saved:[]);
 document.getElementById("clearBtn").addEventListener("click",()=>setSel([]));
 document.getElementById("copyBtn").addEventListener("click",()=>{
   const s=selected();
