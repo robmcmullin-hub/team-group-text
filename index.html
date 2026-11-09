@@ -151,6 +151,7 @@ try{stored=localStorage.getItem(PINKEY);}catch(_){}
 if(stored)await tryPin(stored,false);else showPinForm("");
 })();
 function render(data){
+listEl.innerHTML="";
 if(!data||!Array.isArray(data.f)){
   showMsg("Could not read the contact list. Ask the person who shared it for a new link.");
 }else{
