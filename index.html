@@ -39,6 +39,11 @@ label.row input{width:22px;height:22px;accent-color:var(--accent);flex:none}
 .num{font-variant-numeric:tabular-nums;color:var(--muted);white-space:nowrap;font-size:15px}
 .none{padding:6px 14px 10px 48px;color:var(--muted);font-size:14px}
 .empty{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:16px;color:var(--muted)}
+.pinform{display:flex;flex-direction:column;gap:10px;color:var(--fg)}
+.pinform p{color:var(--muted)}
+.pinform input{font:600 22px var(--body);letter-spacing:.3em;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--bg);color:var(--fg);width:100%}
+.pinform input:focus-visible{outline:3px solid var(--accent);outline-offset:1px}
+.pinerr{color:#c0392b;font-weight:600;min-height:1.2em}
 .bar{position:fixed;left:0;right:0;bottom:0;background:var(--surface);border-top:1px solid var(--line);
   padding-top:12px;padding-bottom:calc(12px + env(safe-area-inset-bottom,0px));
   padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
@@ -73,31 +78,28 @@ label.row input{width:22px;height:22px;accent-color:var(--accent);flex:none}
 </div>
 
 <script>
-// The contact list is NOT stored in this page. It travels in the link after "#",
-// which browsers never send to the web server.
-// Format: base64url(UTF-8 JSON {t:title, f:[[player,[[name,digits|null],...]],...]})
-function decode(h){
-  try{
-    let s=h.replace(/^#d=/,"").replace(/-/g,"+").replace(/_/g,"/");
-    while(s.length%4)s+="=";
-    const bytes=Uint8Array.from(atob(s),c=>c.charCodeAt(0));
-    return JSON.parse(new TextDecoder().decode(bytes));
-  }catch(e){return null;}
+// The contact list is NOT readable on this site. It is stored encrypted in data.bin.
+// Unlocking needs BOTH the code in the link (after #k=, which browsers never send
+// to the web server) AND the team PIN. Format: 12-byte IV + AES-GCM ciphertext of
+// UTF-8 JSON {t:title, f:[[group,[[name,digits|null],...]],...]}.
+const ITER=310000; // must match build_locked_list.py
+let cipher=null;
+async function loadCipher(){
+  if(cipher)return cipher;
+  const res=await fetch("data.bin?t="+Date.now(),{cache:"no-store"});
+  if(!res.ok)throw new Error("fetch");
+  cipher=new Uint8Array(await res.arrayBuffer());
+  return cipher;
 }
-// Short links (#k=KEY): the list is stored encrypted in data.bin next to this page,
-// and only the key in the link can unlock it. The key never leaves the browser.
-async function unlock(h){
-  try{
-    let s=h.replace(/^#k=/,"").replace(/-/g,"+").replace(/_/g,"/");
-    while(s.length%4)s+="=";
-    const keyBytes=Uint8Array.from(atob(s),c=>c.charCodeAt(0));
-    const res=await fetch("data.bin?t="+Date.now(),{cache:"no-store"});
-    if(!res.ok)return null;
-    const buf=new Uint8Array(await res.arrayBuffer());
-    const key=await crypto.subtle.importKey("raw",keyBytes,"AES-GCM",false,["decrypt"]);
-    const plain=await crypto.subtle.decrypt({name:"AES-GCM",iv:buf.slice(0,12)},key,buf.slice(12));
-    return JSON.parse(new TextDecoder().decode(plain));
-  }catch(e){return null;}
+async function unlock(h,pin){
+  let s=h.replace(/^#k=/,"").replace(/-/g,"+").replace(/_/g,"/");
+  while(s.length%4)s+="=";
+  const salt=Uint8Array.from(atob(s),c=>c.charCodeAt(0));
+  const buf=await loadCipher();
+  const base=await crypto.subtle.importKey("raw",new TextEncoder().encode(pin),"PBKDF2",false,["deriveKey"]);
+  const key=await crypto.subtle.deriveKey({name:"PBKDF2",hash:"SHA-256",salt,iterations:ITER},base,{name:"AES-GCM",length:128},false,["decrypt"]);
+  const plain=await crypto.subtle.decrypt({name:"AES-GCM",iv:buf.slice(0,12)},key,buf.slice(12));
+  return JSON.parse(new TextDecoder().decode(plain));
 }
 const listEl=document.getElementById("list");
 const openBtn=document.getElementById("openBtn"),altBtn=document.getElementById("altBtn"),toast=document.getElementById("toast");
@@ -105,13 +107,52 @@ const isIOS=/iPhone|iPad|iPod/.test(navigator.userAgent)||(navigator.platform===
 const fmt=n=>n.length===10?`${n.slice(0,3)}-${n.slice(3,6)}-${n.slice(6)}`:n;
 const esc=s=>String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/"/g,"&quot;");
 let boxes=[];
-const KEY="tgt-sel-"+(location.hash.startsWith("#k=")?"k":(location.hash.length%9973));
-openBtn.textContent="Loading list…";openBtn.setAttribute("aria-disabled","true");
+const KEY="tgt-sel-k";
+const PINKEY="tgt-pin";
+openBtn.textContent="Locked";openBtn.setAttribute("aria-disabled","true");
+function showMsg(t){listEl.innerHTML=`<div class="empty">${t}</div>`;}
+function showPinForm(err){
+  listEl.innerHTML=`<form class="empty pinform" id="pinForm">
+    <label for="pinInput"><strong>Enter the team PIN</strong></label>
+    <p style="margin:0">Ask the team manager for it. You only need to enter it once on this phone.</p>
+    <input id="pinInput" type="password" inputmode="numeric" autocomplete="off" maxlength="12">
+    <button class="btn primary" type="submit" id="pinBtn">Unlock</button>
+    <p class="pinerr" id="pinErr" role="alert">${err||""}</p>
+  </form>`;
+  const f=document.getElementById("pinForm"),inp=document.getElementById("pinInput");
+  inp.focus();
+  f.addEventListener("submit",async ev=>{
+    ev.preventDefault();
+    const pin=inp.value.trim();
+    if(!pin)return;
+    document.getElementById("pinBtn").textContent="Unlocking…";
+    await tryPin(pin,true);
+  });
+}
+async function tryPin(pin,fromForm){
+  let data;
+  try{data=await unlock(location.hash,pin);}
+  catch(e){
+    if(e&&e.message==="fetch"){showMsg("Could not reach the contact list. Check your connection and reload the page.");return;}
+    try{localStorage.removeItem(PINKEY);}catch(_){}
+    showPinForm(fromForm?"That PIN didn't work. Try again.":"");
+    return;
+  }
+  try{localStorage.setItem(PINKEY,pin);}catch(_){}
+  render(data);
+}
 (async()=>{
-const data=location.hash.startsWith("#k=")?await unlock(location.hash):decode(location.hash);
-
+if(!location.hash.startsWith("#k=")){
+  showMsg("This link is missing its code. Check that you have the full link (including the part after #), or ask the person who shared it.");
+  return;
+}
+let stored=null;
+try{stored=localStorage.getItem(PINKEY);}catch(_){}
+if(stored)await tryPin(stored,false);else showPinForm("");
+})();
+function render(data){
 if(!data||!Array.isArray(data.f)){
-  listEl.innerHTML='<div class="empty">Could not load the contact list from this link. Check that you have the full link (including the part after #), or ask the person who shared it.</div>';
+  showMsg("Could not read the contact list. Ask the person who shared it for a new link.");
 }else{
   if(data.t){document.getElementById("title").textContent=data.t;document.title=data.t;}
   const wrap=document.createElement("div");wrap.className="list";
@@ -134,7 +175,7 @@ if(!data||!Array.isArray(data.f)){
 let saved=null;
 try{saved=JSON.parse(localStorage.getItem(KEY));}catch(e){}
 setSel(Array.isArray(saved)?saved:[]);
-})();
+}
 function selected(){return boxes.filter(b=>b.checked).map(b=>b.value);}
 function update(){
   const s=selected();
