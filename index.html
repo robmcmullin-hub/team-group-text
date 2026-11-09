@@ -91,7 +91,7 @@ async function unlock(h){
     let s=h.replace(/^#k=/,"").replace(/-/g,"+").replace(/_/g,"/");
     while(s.length%4)s+="=";
     const keyBytes=Uint8Array.from(atob(s),c=>c.charCodeAt(0));
-    const res=await fetch("data.bin",{cache:"no-store"});
+    const res=await fetch("data.bin?t="+Date.now(),{cache:"no-store"});
     if(!res.ok)return null;
     const buf=new Uint8Array(await res.arrayBuffer());
     const key=await crypto.subtle.importKey("raw",keyBytes,"AES-GCM",false,["decrypt"]);
